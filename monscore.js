@@ -174,3 +174,6 @@ screen.key(['escape', 'q', 'C-c'], () => process.exit(0));
 
 startProgram();
                              
+updateWalletsDisplay();
+screen.render();
+startProgram();
