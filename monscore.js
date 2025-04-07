@@ -107,62 +107,31 @@ function cleanHeaders(headers) {
     return cleanedHeaders;
 }
 
-function parseProxy(proxy) {
-    try {
-        let type = '';
-        let formattedProxy = '';
-
-        if (proxy.includes('@')) {
-            // Format: type://username:password@host:port
-            const proxyRegex = /^(http|socks4|socks5):\/\/([^:]+):([^@]+)@([^:]+):(\d+)$/;
-            const match = proxy.match(proxyRegex);
-            if (!match) throw new Error('Invalid proxy format');
-            [, type, username, password, host, port] = match;
-        } else {
-            // Format: host:port (try to auto-detect type)
-            const simpleProxyRegex = /^([^:]+):(\d+)$/;
-            const match = proxy.match(simpleProxyRegex);
-            if (!match) throw new Error('Invalid simple proxy format');
-            [, host, port] = match;
-
-            // Auto-detect based on port range
-            if (port.startsWith('10') || port.startsWith('31')) {
-                type = 'socks5';
-            } else if (port.startsWith('9') || port.startsWith('4')) {
-                type = 'socks4';
-            } else {
-                type = 'http';
-            }
-        }
-
-        formattedProxy = `${type}://${host}:${port}`;
-        return { type, url: formattedProxy, originalUrl: proxy };
-    } catch (e) {
-        logs.log(`{red-fg}Proxy parse error: ${proxy} - ${e.message}{/red-fg}`);
-        return null;
+function createProxyAgent(proxyString) {
+  if (!proxyString) return null;
+  try {
+    if (proxyString.startsWith('socks://') || proxyString.startsWith('socks4://') || proxyString.startsWith('socks5://')) {
+      return new SocksProxyAgent(proxyString);
     }
+    let formattedProxy = proxyString;
+    if (!formattedProxy.includes('://')) {
+      if (formattedProxy.includes('@') || !formattedProxy.match(/^\d+\.\d+\.\d+\.\d+:\d+$/)) {
+        formattedProxy = `http://${formattedProxy}`;
+      } else {
+        const [host, port] = formattedProxy.split(':');
+        formattedProxy = `http://${host}:${port}`;
+      }
+    }
+    return new HttpsProxyAgent(formattedProxy);
+  } catch (error) {
+    console.error('\x1b[33m%s\x1b[0m', `⚠️ Error creating proxy agent for ${proxyString}: ${error.message}`);
+    return null;
+  }
 }
 
-function getRandomProxy(usedProxies = new Set()) {
-    if (proxies.length === 0) return null;
-    let availableProxies = proxies.filter(proxy => !usedProxies.has(proxy));
-    if (availableProxies.length === 0) return null;
-
-    const proxy = availableProxies[Math.floor(Math.random() * availableProxies.length)];
-    usedProxies.add(proxy);
-
-    try {
-        if (proxy.startsWith('http')) {
-            return { type: 'http', agent: new HttpProxyAgent(proxy), url: proxy };
-        } else if (proxy.startsWith('socks4') || proxy.startsWith('socks5')) {
-            return { type: 'socks', agent: new SocksProxyAgent(proxy), url: proxy };
-        }
-        return null;
-    } catch (e) {
-        logs.log(`{red-fg}Proxy parse error: ${proxy} - ${e.message}{/red-fg}`);
-        return null;
-    }
-}
+function getRandomUserAgent() {
+  const ua = new userAgents({ deviceCategory: 'desktop' });
+  return ua.toString();
 
 async function testProxy(proxy) {
     try {
