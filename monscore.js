@@ -2,8 +2,9 @@ const fs = require('fs');
 const ethers = require('ethers');
 const axios = require('axios');
 const blessed = require('blessed');
-const { HttpProxyAgent } = require('http-proxy-agent');
 const { SocksProxyAgent } = require('socks-proxy-agent');
+const { HttpsProxyAgent } = require('https-proxy-agent');
+const userAgents = require('user-agents');
 
 const screen = blessed.screen({ smartCSR: true, title: 'Auto Bot Monad Score' });
 
@@ -50,43 +51,45 @@ const MAX_RETRIES = 3;
 let REFERRAL_CODE = fs.existsSync('code.txt') ? fs.readFileSync('code.txt', 'utf-8').trim() : '';
 if (!REFERRAL_CODE) logs.log('{red-fg}Error: No referral code in code.txt{/red-fg}');
 
-const defaultHeaders = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-    'Accept': 'application/json',
-    'Content-Type': 'application/json',
-    'origin': 'https://monadscore.xyz',
-    'referer': 'https://monadscore.xyz/'
-};
+let proxies = [];
+try {
+    if (fs.existsSync('./proxies.txt')) {
+        const proxiesContent = fs.readFileSync('./proxies.txt', 'utf8');
+        proxies = proxiesContent
+            .split('\n')
+            .map(proxy => proxy.trim())
+            .filter(proxy => proxy && !proxy.startsWith('#'));
+        console.log(`🌐 Loaded ${proxies.length} proxies from proxies.txt`);
+    }
+} catch (error) {
+    console.error('\x1b[33m%s\x1b[0m', `⚠️ Error loading proxies.txt: ${error.message}`);
+}
 
-function parseProxy(proxy) {
+function createProxyAgent(proxyString) {
+    if (!proxyString) return null;
     try {
-        const proxyRegex = /^(http|socks4|socks5):\/\/(?:([^:]+):([^@]+)@)?([^:]+):(\d+)$/;
-        const match = proxy.match(proxyRegex);
-        if (!match) throw new Error('Invalid proxy format');
-
-        const [, type, username, password, host, port] = match;
-        return { type, url: `${type}://${username}:${password}@${host}:${port}` };
-    } catch (e) {
-        logs.log(`{red-fg}Proxy parse error: ${proxy} - ${e.message}{/red-fg}`);
+        if (proxyString.startsWith('socks://') || proxyString.startsWith('socks4://') || proxyString.startsWith('socks5://')) {
+            return new SocksProxyAgent(proxyString);
+        }
+        let formattedProxy = proxyString;
+        if (!formattedProxy.includes('://')) {
+            if (formattedProxy.includes('@') || !formattedProxy.match(/^\d+\.\d+\.\d+\.\d+:\d+$/)) {
+                formattedProxy = `http://${formattedProxy}`;
+            } else {
+                const [host, port] = formattedProxy.split(':');
+                formattedProxy = `http://${host}:${port}`;
+            }
+        }
+        return new HttpsProxyAgent(formattedProxy);
+    } catch (error) {
+        console.error('\x1b[33m%s\x1b[0m', `⚠️ Error creating proxy agent for ${proxyString}: ${error.message}`);
         return null;
     }
 }
 
-let proxies = fs.existsSync('proxies.txt') 
-    ? fs.readFileSync('proxies.txt', 'utf-8')
-        .split('\n')
-        .map(line => line.trim())
-        .filter(Boolean)
-        .map(proxy => parseProxy(proxy))
-        .filter(proxy => proxy !== null)
-    : [];
-
-function getRandomProxy() {
-    if (proxies.length === 0) return null;
-    const proxy = proxies[Math.floor(Math.random() * proxies.length)];
-    return proxy.type.startsWith('socks')
-        ? { agent: new SocksProxyAgent(proxy.url), url: proxy.url }
-        : { agent: new HttpProxyAgent(proxy.url), url: proxy.url };
+function getRandomUserAgent() {
+    const ua = new userAgents({ deviceCategory: 'desktop' });
+    return ua.toString();
 }
 
 const generateWallet = () => ethers.Wallet.createRandom();
@@ -99,16 +102,26 @@ function updateWalletsDisplay() {
 }
 
 async function makeRequest(method, url, data, retries = 0) {
-    let proxy = retries < MAX_RETRIES ? getRandomProxy() : null;
-    
+    let proxy = retries < MAX_RETRIES && proxies.length ? createProxyAgent(proxies[Math.floor(Math.random() * proxies.length)]) : null;
+
     try {
         const config = {
-            method, url, headers: defaultHeaders, data, timeout: 15000,
-            ...(proxy ? { httpAgent: proxy.agent, httpsAgent: proxy.agent } : {})
+            method,
+            url,
+            headers: {
+                'User-Agent': getRandomUserAgent(),
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                'origin': 'https://monadscore.xyz',
+                'referer': 'https://monadscore.xyz/'
+            },
+            data,
+            timeout: 15000,
+            ...(proxy ? { httpAgent: proxy, httpsAgent: proxy } : {})
         };
-        
+
         const res = await axios(config);
-        logs.log(`- Proxy: ${proxy ? proxy.url.split('@')[1] : 'none'}`);
+        logs.log(`- Proxy Used: ${proxy ? proxies.find(p => p.includes(proxy.proxy)) : 'None'}`);
         return res.data;
     } catch (e) {
         if (retries < MAX_RETRIES) {
