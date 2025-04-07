@@ -4,6 +4,7 @@ const axios = require('axios');
 const blessed = require('blessed');
 const { HttpProxyAgent } = require('http-proxy-agent');
 const { SocksProxyAgent } = require('socks-proxy-agent');
+const userAgents = require('user-agents');
 
 const screen = blessed.screen({
     smartCSR: true,
@@ -72,252 +73,104 @@ const prompt = blessed.prompt({
 const BASE_URL = 'https://mscore.onrender.com';
 const MAX_RETRIES = 3;
 
-// Read referral code from code.txt
 let REFERRAL_CODE = '';
 try {
     if (fs.existsSync('code.txt')) {
         REFERRAL_CODE = fs.readFileSync('code.txt', 'utf-8').trim();
-        if (!REFERRAL_CODE) {
-            logs.log('{yellow-fg}Warning: code.txt is empty{/yellow-fg}');
-        }
-    } else {
-        logs.log('{red-fg}Error: code.txt not found{/red-fg}');
     }
 } catch (error) {
     logs.log(`{red-fg}Error reading code.txt: ${error.message}{/red-fg}`);
 }
 
 const defaultHeaders = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+    'User-Agent': 'Mozilla/5.0',
     'Accept': 'application/json, text/plain, */*',
-    'Content-Type': 'application/json',
-    'origin': 'https://monadscore.xyz',
-    'referer': 'https://monadscore.xyz/'
+    'Content-Type': 'application/json'
 };
 
 function cleanHeaders(headers) {
     const cleanedHeaders = {};
     for (const [key, value] of Object.entries(headers)) {
-        if (typeof value === 'string') {
-            cleanedHeaders[key] = value.replace(/[^\x20-\x7E]/g, '');
-        } else {
-            cleanedHeaders[key] = value;
-        }
+        cleanedHeaders[key] = typeof value === 'string' ? value.replace(/[^\x20-\x7E]/g, '') : value;
     }
     return cleanedHeaders;
 }
 
 let proxies = [];
 try {
-  if (fs.existsSync('./proxies.txt')) {
-    const proxiesContent = fs.readFileSync('./proxies.txt', 'utf8');
-    proxies = proxiesContent
-      .split('\n')
-      .map(proxy => proxy.trim())
-      .filter(proxy => proxy && !proxy.startsWith('#'));
-    console.log(`🌐 Loaded ${proxies.length} proxies from proxies.txt`);
-  }
+    if (fs.existsSync('proxies.txt')) {
+        proxies = fs.readFileSync('proxies.txt', 'utf8')
+            .split('\n')
+            .map(proxy => proxy.trim())
+            .filter(proxy => proxy && !proxy.startsWith('#'));
+    }
 } catch (error) {
-  console.error('\x1b[33m%s\x1b[0m', `⚠️ Error loading proxies.txt: ${error.message}`);
+    console.error(`⚠️ Error loading proxies.txt: ${error.message}`);
 }
 
 function createProxyAgent(proxyString) {
-  if (!proxyString) return null;
-  try {
-    if (proxyString.startsWith('socks://') || proxyString.startsWith('socks4://') || proxyString.startsWith('socks5://')) {
-      return new SocksProxyAgent(proxyString);
+    if (!proxyString) return null;
+    try {
+        if (proxyString.startsWith('socks')) {
+            return new SocksProxyAgent(proxyString);
+        }
+        return new HttpProxyAgent(proxyString.includes('://') ? proxyString : `http://${proxyString}`);
+    } catch (error) {
+        console.error(`⚠️ Error creating proxy agent: ${error.message}`);
+        return null;
     }
-    let formattedProxy = proxyString;
-    if (!formattedProxy.includes('://')) {
-      if (formattedProxy.includes('@') || !formattedProxy.match(/^\d+\.\d+\.\d+\.\d+:\d+$/)) {
-        formattedProxy = `http://${formattedProxy}`;
-      } else {
-        const [host, port] = formattedProxy.split(':');
-        formattedProxy = `http://${host}:${port}`;
-      }
-    }
-    return new HttpsProxyAgent(formattedProxy);
-  } catch (error) {
-    console.error('\x1b[33m%s\x1b[0m', `⚠️ Error creating proxy agent for ${proxyString}: ${error.message}`);
-    return null;
-  }
 }
 
 function getRandomUserAgent() {
-  const ua = new userAgents({ deviceCategory: 'desktop' });
-  return ua.toString();
-
-async function testProxy(proxy) {
-    try {
-        const response = await axios.get('https://api.ipify.org', {
-            httpAgent: proxy.agent,
-            httpsAgent: proxy.agent,
-            timeout: 5000
-        });
-        logs.log(`- Proxy ${proxy.type} ${proxy.url.split('@')[1] || proxy.url} valid`);
-        return true;
-    } catch (e) {
-        logs.log(`- Proxy ${proxy.type} ${proxy.url.split('@')[1] || proxy.url} invalid: ${e.message}`);
-        return false;
-    }
+    const ua = new userAgents({ deviceCategory: 'desktop' });
+    return ua.toString();
 }
 
-const generateWallet = () => ethers.Wallet.createRandom();
-const saveWallets = (wallets) => fs.writeFileSync('wallets.json', JSON.stringify(wallets, null, 2));
-const updateWalletsDisplay = () => {
-    const wallets = fs.existsSync('wallets.json') ? JSON.parse(fs.readFileSync('wallets.json')) : [];
-    walletsBox.setContent(JSON.stringify(wallets, null, 2));
-};
-
-async function makeRequest(method, url, data, retries = 0, usedProxies = new Set(), lastProxy = null) {
-    let proxy = retries < MAX_RETRIES ? getRandomProxy(usedProxies) : null;
-
-    if (proxy) {
-        const isWorking = await testProxy(proxy);
-        if (!isWorking) {
-            if (retries < MAX_RETRIES) {
-                return makeRequest(method, url, data, retries + 1, usedProxies, lastProxy);
-            }
-            proxy = null; 
-        }
-    }
-
+async function makeRequest(method, url, data, retries = 0) {
     try {
         const config = {
             method,
             url,
             headers: cleanHeaders(defaultHeaders),
             data,
-            ...(proxy ? { httpAgent: proxy.agent, httpsAgent: proxy.agent } : {}),
             timeout: 15000
         };
-        
-        const res = await axios(config);
-        logs.log(`- Proxy: ${proxy ? proxy.type : 'none'}`);
-        stats.setContent(`Total: ${stats.total || 0}\nSuccess: ${stats.success || 0}\nFailed: ${stats.failed || 0}\nLast Proxy: ${proxy ? proxy.url : 'none'}`);
-        return res.data;
+        return await axios(config);
     } catch (e) {
         if (retries < MAX_RETRIES) {
-            logs.log(`- Proxy ${proxy ? proxy.type : 'none'} failed: ${e.message}, retry ${retries + 1}/${MAX_RETRIES}`);
-            return makeRequest(method, url, data, retries + 1, usedProxies, proxy);
+            return makeRequest(method, url, data, retries + 1);
         }
-        logs.log(`- Proxy: {red-fg}All retries failed: ${e.message}{/red-fg}`);
-        try {
-            const config = {
-                method,
-                url,
-                headers: cleanHeaders(defaultHeaders),
-                data,
-                timeout: 15000
-            };
-            logs.log('- Fallback: Trying without proxy');
-            const res = await axios(config);
-            logs.log('- Proxy: none (fallback success)');
-            stats.setContent(`Total: ${stats.total || 0}\nSuccess: ${stats.success || 0}\nFailed: ${stats.failed || 0}\nLast Proxy: none`);
-            return res.data;
-        } catch (fallbackError) {
-            logs.log(`- Fallback failed: ${fallbackError.message}`);
-            stats.setContent(`Total: ${stats.total || 0}\nSuccess: ${stats.success || 0}\nFailed: ${stats.failed || 0}\nLast Proxy: ${proxy ? proxy.url : 'none'}`);
-            return null;
-        }
+        return null;
     }
 }
 
 async function registerWallet(walletAddress) {
-    if (!REFERRAL_CODE) {
-        logs.log('{red-fg}Error: No referral code provided{/red-fg}');
-        return null;
-    }
-
-    return await makeRequest('post', `${BASE_URL}/user`, {
-        wallet: walletAddress,
-        invite: REFERRAL_CODE
-    });
+    if (!REFERRAL_CODE) return null;
+    return await makeRequest('post', `${BASE_URL}/user`, { wallet: walletAddress, invite: REFERRAL_CODE });
 }
 
 async function startNode(walletAddress) {
-    return await makeRequest('put', `${BASE_URL}/user/update-start-time`, {
-        wallet: walletAddress,
-        startTime: Date.now()
-    });
+    return await makeRequest('put', `${BASE_URL}/user/update-start-time`, { wallet: walletAddress, startTime: Date.now() });
 }
 
 function startProgram() {
-    let total = 0, success = 0, failed = 0;
-    stats.total = total;
-    stats.success = success;
-    stats.failed = failed;
-    
-    if (!REFERRAL_CODE) {
-        logs.log('{red-fg}Cannot start: No referral code in code.txt{/red-fg}');
-        return;
-    }
-
-    if (proxies.length === 0) {
-        logs.log('{yellow-fg}Warning: proxies.txt is empty or not found{/yellow-fg}');
-    } else {
-        logs.log(`Loaded ${proxies.length} proxies`);
-    }
-
+    if (!REFERRAL_CODE) return;
     prompt.show();
     prompt.input('Number of wallets:', '', async (err, value) => {
         prompt.hide();
         const count = parseInt(value);
-        if (isNaN(count) || count <= 0) {
-            logs.log('{red-fg}Invalid number{/red-fg}');
-            screen.render();
-            return;
-        }
-
-        total = count;
-        stats.total = total;
-        let wallets = fs.existsSync('wallets.json') ? JSON.parse(fs.readFileSync('wallets.json')) : [];
-        logs.log(`Starting ${count} wallets`);
-        logs.log(`Using referral code: ${REFERRAL_CODE}`);
-
+        if (isNaN(count) || count <= 0) return;
         for (let i = 0; i < count; i++) {
-            const wallet = generateWallet();
-            const addrShort = wallet.address.slice(0, 8) + '...';
-            logs.log(`#${i + 1}/${count}: ${addrShort}`);
-
+            const wallet = ethers.Wallet.createRandom();
             const reg = await registerWallet(wallet.address);
             if (reg?.success) {
-                logs.log(`- Reg: OK`);
-                const start = await startNode(wallet.address);
-                if (start?.success) {
-                    logs.log(`- Node: ON`);
-                    success++;
-                    stats.success = success;
-                    wallets.push({
-                        address: wallet.address,
-                        privateKey: wallet.privateKey,
-                        createdAt: new Date().toISOString()
-                    });
-                    saveWallets(wallets);
-                    updateWalletsDisplay();
-                } else {
-                    logs.log(`- Node: {red-fg}FAIL{/red-fg}`);
-                    failed++;
-                    stats.failed = failed;
-                }
-            } else {
-                logs.log(`- Reg: {red-fg}FAIL{/red-fg}`);
-                failed++;
-                stats.failed = failed;
+                await startNode(wallet.address);
             }
-
-            stats.setContent(`Total: ${total}\nSuccess: ${success}\nFailed: ${failed}\nLast Proxy: ${stats.lastProxy || 'none'}`);
-            screen.render();
         }
-
-        logs.log(`{cyan-fg}Done!{/cyan-fg}`);
-        stats.setContent(`Total: ${total}\nSuccess: ${success}\nFailed: ${failed}\nLast Proxy: ${stats.lastProxy || 'none'}`);
-        screen.render();
     });
 }
 
 screen.key(['escape', 'q', 'C-c'], () => process.exit(0));
 
-updateWalletsDisplay();
-screen.render();
 startProgram();
+                             
