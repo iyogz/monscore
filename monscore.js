@@ -4,31 +4,15 @@ const axios = require('axios');
 const blessed = require('blessed');
 const { HttpProxyAgent } = require('http-proxy-agent');
 const { SocksProxyAgent } = require('socks-proxy-agent');
-const userAgents = require('user-agents');
 
-const screen = blessed.screen({
-    smartCSR: true,
-    title: 'Auto Bot Monad Score'
-});
-
-const banner = blessed.box({
-    parent: screen,
-    top: 0,
-    left: 'center',
-    width: '100%',
-    height: 3,
-    content: '{center}{bold}AUTO BOT MONADSCORE - AIRDROP INSIDERS{/bold}{/center}',
-    tags: true,
-    style: { fg: 'cyan' },
-    border: { type: 'line', fg: 'white' }
-});
+const screen = blessed.screen({ smartCSR: true, title: 'Auto Bot Monad Score' });
 
 const logs = blessed.log({
     parent: screen,
     top: 3,
     left: 0,
-    width: '70%', 
-    height: '96%', 
+    width: '70%',
+    height: '96%',
     label: ' Logs ',
     tags: true,
     border: { type: 'line', fg: 'white' },
@@ -60,92 +44,84 @@ const walletsBox = blessed.box({
     scrollbar: { bg: 'blue' }
 });
 
-const prompt = blessed.prompt({
-    parent: screen,
-    top: 'center',
-    left: 'center',
-    height: 5,
-    width: 25,
-    border: 'line',
-    hidden: true
-});
-
 const BASE_URL = 'https://mscore.onrender.com';
 const MAX_RETRIES = 3;
 
-let REFERRAL_CODE = '';
-try {
-    if (fs.existsSync('code.txt')) {
-        REFERRAL_CODE = fs.readFileSync('code.txt', 'utf-8').trim();
-    }
-} catch (error) {
-    logs.log(`{red-fg}Error reading code.txt: ${error.message}{/red-fg}`);
-}
+let REFERRAL_CODE = fs.existsSync('code.txt') ? fs.readFileSync('code.txt', 'utf-8').trim() : '';
+if (!REFERRAL_CODE) logs.log('{red-fg}Error: No referral code in code.txt{/red-fg}');
 
 const defaultHeaders = {
-    'User-Agent': 'Mozilla/5.0',
-    'Accept': 'application/json, text/plain, */*',
-    'Content-Type': 'application/json'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+    'Accept': 'application/json',
+    'Content-Type': 'application/json',
+    'origin': 'https://monadscore.xyz',
+    'referer': 'https://monadscore.xyz/'
 };
 
-function cleanHeaders(headers) {
-    const cleanedHeaders = {};
-    for (const [key, value] of Object.entries(headers)) {
-        cleanedHeaders[key] = typeof value === 'string' ? value.replace(/[^\x20-\x7E]/g, '') : value;
-    }
-    return cleanedHeaders;
-}
-
-let proxies = [];
-try {
-    if (fs.existsSync('proxies.txt')) {
-        proxies = fs.readFileSync('proxies.txt', 'utf8')
-            .split('\n')
-            .map(proxy => proxy.trim())
-            .filter(proxy => proxy && !proxy.startsWith('#'));
-    }
-} catch (error) {
-    console.error(`⚠️ Error loading proxies.txt: ${error.message}`);
-}
-
-function createProxyAgent(proxyString) {
-    if (!proxyString) return null;
+function parseProxy(proxy) {
     try {
-        if (proxyString.startsWith('socks')) {
-            return new SocksProxyAgent(proxyString);
-        }
-        return new HttpProxyAgent(proxyString.includes('://') ? proxyString : `http://${proxyString}`);
-    } catch (error) {
-        console.error(`⚠️ Error creating proxy agent: ${error.message}`);
+        const proxyRegex = /^(http|socks4|socks5):\/\/(?:([^:]+):([^@]+)@)?([^:]+):(\d+)$/;
+        const match = proxy.match(proxyRegex);
+        if (!match) throw new Error('Invalid proxy format');
+
+        const [, type, username, password, host, port] = match;
+        return { type, url: `${type}://${username}:${password}@${host}:${port}` };
+    } catch (e) {
+        logs.log(`{red-fg}Proxy parse error: ${proxy} - ${e.message}{/red-fg}`);
         return null;
     }
 }
 
-function getRandomUserAgent() {
-    const ua = new userAgents({ deviceCategory: 'desktop' });
-    return ua.toString();
+let proxies = fs.existsSync('proxies.txt') 
+    ? fs.readFileSync('proxies.txt', 'utf-8')
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean)
+        .map(proxy => parseProxy(proxy))
+        .filter(proxy => proxy !== null)
+    : [];
+
+function getRandomProxy() {
+    if (proxies.length === 0) return null;
+    const proxy = proxies[Math.floor(Math.random() * proxies.length)];
+    return proxy.type.startsWith('socks')
+        ? { agent: new SocksProxyAgent(proxy.url), url: proxy.url }
+        : { agent: new HttpProxyAgent(proxy.url), url: proxy.url };
+}
+
+const generateWallet = () => ethers.Wallet.createRandom();
+const saveWallets = (wallets) => fs.writeFileSync('wallets.json', JSON.stringify(wallets, null, 2));
+
+function updateWalletsDisplay() {
+    const wallets = fs.existsSync('wallets.json') ? JSON.parse(fs.readFileSync('wallets.json')) : [];
+    walletsBox.setContent(wallets.map(w => w.address).join('\n'));
+    screen.render();
 }
 
 async function makeRequest(method, url, data, retries = 0) {
+    let proxy = retries < MAX_RETRIES ? getRandomProxy() : null;
+    
     try {
         const config = {
-            method,
-            url,
-            headers: cleanHeaders(defaultHeaders),
-            data,
-            timeout: 15000
+            method, url, headers: defaultHeaders, data, timeout: 15000,
+            ...(proxy ? { httpAgent: proxy.agent, httpsAgent: proxy.agent } : {})
         };
-        return await axios(config);
+        
+        const res = await axios(config);
+        logs.log(`- Proxy: ${proxy ? proxy.url.split('@')[1] : 'none'}`);
+        return res.data;
     } catch (e) {
         if (retries < MAX_RETRIES) {
+            logs.log(`- Proxy failed: ${e.message}, retry ${retries + 1}/${MAX_RETRIES}`);
             return makeRequest(method, url, data, retries + 1);
         }
+        logs.log(`- All retries failed: ${e.message}`);
         return null;
     }
 }
 
 async function registerWallet(walletAddress) {
-    if (!REFERRAL_CODE) return null;
+    if (!REFERRAL_CODE) return logs.log('{red-fg}Error: No referral code{/red-fg}');
     return await makeRequest('post', `${BASE_URL}/user`, { wallet: walletAddress, invite: REFERRAL_CODE });
 }
 
@@ -153,31 +129,54 @@ async function startNode(walletAddress) {
     return await makeRequest('put', `${BASE_URL}/user/update-start-time`, { wallet: walletAddress, startTime: Date.now() });
 }
 
-function startProgram() {
-    if (!REFERRAL_CODE) return;
-    prompt.show();
-    prompt.input('Number of wallets:', '', async (err, value) => {
-        prompt.hide();
-        const count = parseInt(value);
-        if (isNaN(count) || count <= 0) return;
-        for (let i = 0; i < count; i++) {
-            const wallet = ethers.Wallet.createRandom();
-            const reg = await registerWallet(wallet.address);
-            if (reg?.success) {
-                await startNode(wallet.address);
+async function startProgram() {
+    let total = 0, success = 0, failed = 0;
+
+    if (!REFERRAL_CODE) {
+        logs.log('{red-fg}Cannot start: No referral code{/red-fg}');
+        return;
+    }
+
+    logs.log(`Using referral code: ${REFERRAL_CODE}`);
+    if (proxies.length > 0) logs.log(`Loaded ${proxies.length} proxies`);
+
+    const count = 5; // Example: Generate 5 wallets
+    total = count;
+
+    let wallets = fs.existsSync('wallets.json') ? JSON.parse(fs.readFileSync('wallets.json')) : [];
+
+    for (let i = 0; i < count; i++) {
+        const wallet = generateWallet();
+        logs.log(`#${i + 1}/${count}: ${wallet.address.slice(0, 8)}...`);
+
+        const reg = await registerWallet(wallet.address);
+        if (reg?.success) {
+            logs.log(`- Registered: OK`);
+            const start = await startNode(wallet.address);
+            if (start?.success) {
+                logs.log(`- Node Started: OK`);
+                success++;
+                wallets.push({ address: wallet.address, privateKey: wallet.privateKey, createdAt: new Date().toISOString() });
+                saveWallets(wallets);
+                updateWalletsDisplay();
+            } else {
+                logs.log(`- Node Start: FAIL`);
+                failed++;
             }
+        } else {
+            logs.log(`- Register: FAIL`);
+            failed++;
         }
-    });
+
+        stats.setContent(`Total: ${total}\nSuccess: ${success}\nFailed: ${failed}`);
+        screen.render();
+    }
+
+    logs.log(`{cyan-fg}Done!{/cyan-fg}`);
+    screen.render();
 }
 
 screen.key(['escape', 'q', 'C-c'], () => process.exit(0));
-
-startProgram();
-                             
-function updateWalletsDisplay() {
-    walletsBox.setContent('Fetching wallet data...');
-    screen.render();
-}
 
 updateWalletsDisplay();
 screen.render();
