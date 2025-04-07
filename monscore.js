@@ -107,6 +107,20 @@ function cleanHeaders(headers) {
     return cleanedHeaders;
 }
 
+let proxies = [];
+try {
+  if (fs.existsSync('./proxies.txt')) {
+    const proxiesContent = fs.readFileSync('./proxies.txt', 'utf8');
+    proxies = proxiesContent
+      .split('\n')
+      .map(proxy => proxy.trim())
+      .filter(proxy => proxy && !proxy.startsWith('#'));
+    console.log(`🌐 Loaded ${proxies.length} proxies from proxies.txt`);
+  }
+} catch (error) {
+  console.error('\x1b[33m%s\x1b[0m', `⚠️ Error loading proxies.txt: ${error.message}`);
+}
+
 function createProxyAgent(proxyString) {
   if (!proxyString) return null;
   try {
