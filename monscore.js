@@ -174,6 +174,11 @@ screen.key(['escape', 'q', 'C-c'], () => process.exit(0));
 
 startProgram();
                              
+function updateWalletsDisplay() {
+    walletsBox.setContent('Fetching wallet data...');
+    screen.render();
+}
+
 updateWalletsDisplay();
 screen.render();
 startProgram();
